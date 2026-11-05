@@ -1,23 +1,25 @@
+use core::error;
 use egui::Key::P;
 use egui::frame;
-use core::error;
 use std::sync::Arc;
-use wgpu::{*,DisplayAndWindowHandle, MemoryBudgetThresholds, RenderPassDescriptor};
+use wgpu::{DisplayAndWindowHandle, MemoryBudgetThresholds, RenderPassDescriptor, *};
 // use wgpu_core::error;
+use wgpu::util::DeviceExt;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
-use wgpu::util::DeviceExt;
+
+mod texture;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
     pub position: [f32; 3],
-    pub color: [f32; 3],
+    pub tex_coords: [f32; 2],
 }
-// we put the verticies in counter-clockwise both due to tradition and because we want access to backface culling. 
+// we put the verticies in counter-clockwise both due to tradition and because we want access to backface culling.
 const VERTICIES: &[Vertex] = &[
     // Triangle
 
@@ -25,57 +27,82 @@ const VERTICIES: &[Vertex] = &[
     // Vertex { position: [-0.5, -0.5,  0.0],    color: [0.0,1.0,0.0]},
     // Vertex { position: [ 0.5, -0.5,  0.0],    color: [0.0,0.0,1.0]},
 
-
     // rgb_color = ((srgb_color / 255 + 0.055) / 1.055) ^ 2.4 is the forumula to get the proper colors out of sRGB since it chooses to fuck them up due to the way humans percieve colors.
 
-    // Pentagon
-    // Vertex { position: [-0.0868241, 0.49240386, 0.0], color: [0.5, 0.0, 0.5] }, // A
-    // Vertex { position: [-0.49513406, 0.06958647, 0.0], color: [0.5, 0.0, 0.5] }, // B
-    // Vertex { position: [-0.21918549, -0.44939706, 0.0], color: [0.5, 0.0, 0.5] }, // C
-    // Vertex { position: [0.35966998, -0.3473291, 0.0], color: [0.5, 0.0, 0.5] }, // D
-    // Vertex { position: [0.44147372, 0.2347359, 0.0], color: [0.5, 0.0, 0.5] }, // E
+    // Pentagon with upside down textures
+    // Vertex { position: [-0.0868241, 0.49240386, 0.0], tex_coords: [0.4131759, 0.99240386], }, // A
+    // Vertex { position: [-0.49513406, 0.06958647, 0.0], tex_coords: [0.0048659444, 0.56958647], }, // B
+    // Vertex { position: [-0.21918549, -0.44939706, 0.0], tex_coords: [0.28081453, 0.05060294], }, // C
+    // Vertex { position: [0.35966998, -0.3473291, 0.0], tex_coords: [0.85967, 0.1526709], }, // D
+    // Vertex { position: [0.44147372, 0.2347359, 0.0], tex_coords: [0.9414737, 0.7347359], }, // E
+
+    // Pentagon with right-side-up textures
+    // all of them seem to be 1- the previous number give or take. which makes sense
+    Vertex { position: [-0.0868241, 0.49240386, 0.0], tex_coords: [0.4131759, 0.00759614], }, // A 
+    Vertex { position: [-0.49513406, 0.06958647, 0.0], tex_coords: [0.0048659444, 0.43041354], }, // B
+    Vertex { position: [-0.21918549, -0.44939706, 0.0], tex_coords: [0.28081453, 0.949397], }, // C
+    Vertex { position: [0.35966998, -0.3473291, 0.0], tex_coords: [0.85967, 0.84732914], }, // D
+    Vertex { position: [0.44147372, 0.2347359, 0.0], tex_coords: [0.9414737, 0.2652641], }, // E
 
     //hexagon
-    Vertex { position: [0.0,0.5,0.0],       color: [0.5,0.0,0.5]},
-    Vertex { position: [-0.25,0.25,0.0],    color: [0.5,0.0,0.5]},
-    Vertex { position: [-0.25,-0.25,0.0],     color: [0.5,0.0,0.5]},
-    Vertex { position: [0.0,-0.5,0.0],      color: [0.5,0.0,0.5]},
-    Vertex { position: [0.25,-0.25,0.0],     color: [0.5,0.0,0.5]},
-    Vertex { position: [0.25,0.25,0.0],      color: [0.5,0.0,0.5]}
-
-
+    // Vertex {
+    //     position: [0.0, 0.5, 0.0],
+    //     color: [0.5, 0.0, 0.5],
+    // },
+    // Vertex {
+    //     position: [-0.25, 0.25, 0.0],
+    //     color: [0.5, 0.0, 0.5],
+    // },
+    // Vertex {
+    //     position: [-0.25, -0.25, 0.0],
+    //     color: [0.5, 0.0, 0.5],
+    // },
+    // Vertex {
+    //     position: [0.0, -0.5, 0.0],
+    //     color: [0.5, 0.0, 0.5],
+    // },
+    // Vertex {
+    //     position: [0.25, -0.25, 0.0],
+    //     color: [0.5, 0.0, 0.5],
+    // },
+    // Vertex {
+    //     position: [0.25, 0.25, 0.0],
+    //     color: [0.5, 0.0, 0.5],
+    // },
 ];
 
 const INDICIES: &[u16] = &[
-    // pentagon 
-    // 0,1,4,
-    // 1,2,4,
-    // 2,3,4,
-    
+    // pentagon
+    0,1,4,
+    1,2,4,
+    2,3,4,
+
     // hexagon
-    0,1,5,
-    1,2,5,
-    2,3,5,
-    3,4,5
+    // 0, 1, 5, 
+    // 1, 2, 5,
+    // 2, 3, 5,
+    // 3, 4, 5,
+
+    //NOTE TO SELF: don't forget to switch the index array because it will NOT throw a goddamn error for some reason and will just used the fucked up indicies. 
 ];
 
 impl Vertex {
     fn desc() -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout{
+        wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &[
-                wgpu::VertexAttribute{
+                wgpu::VertexAttribute {
                     offset: 0,
                     shader_location: 0,
                     format: wgpu::VertexFormat::Float32x3,
                 },
                 wgpu::VertexAttribute {
-                    offset: std::mem::size_of::<[f32;3]>() as wgpu::BufferAddress,
-                    shader_location: 1, 
-                    format: wgpu::VertexFormat::Float32x3,
-                }
-            ]
+                    offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x2, // Changed from Float32x3 since we're no longer using color coordinates directly
+                },
+            ],
         }
     }
 }
@@ -92,8 +119,8 @@ struct State {
     config: wgpu::SurfaceConfiguration,
 
     size: winit::dpi::PhysicalSize<u32>,
-    
-    is_surface_configured: bool,
+
+    is_surface_configured: bool, //TODO: figure out where the hell this is meant to go 
 
     render_pipleline: wgpu::RenderPipeline,
 
@@ -105,75 +132,118 @@ struct State {
 
     num_indicies: u32,
 
+    diffuse_bind_group: wgpu::BindGroup,
+
+    diffuse_texture: texture::Texture,
 }
 
 impl State {
     async fn new(window: Arc<Window>) -> State {
         let size = window.inner_size();
-        
+
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             flags: wgpu::InstanceFlags::default(),
             memory_budget_thresholds: MemoryBudgetThresholds::default(),
             backend_options: wgpu::BackendOptions::default(),
             display: Default::default(),
-            
         });
-        
+
         let surface = instance.create_surface(window.clone()).unwrap();
-        
+
         let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: Some(&surface),
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
                 apply_limit_buckets: false,
             })
             .await
             .unwrap();
-        
+
         let (device, queue) = adapter
-        .request_device(
-            &wgpu::DeviceDescriptor {
+            .request_device(&wgpu::DeviceDescriptor {
                 label: Some("Main Device"),
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
                 memory_hints: Default::default(),
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 trace: wgpu::Trace::Off,
-            },
-        )
-        .await
-        .unwrap();
-    
-    let vertex_buffer = device.create_buffer_init(
-            &wgpu::util::BufferInitDescriptor {
-                label: Some("Vertex Buffer"),
-                contents: bytemuck::cast_slice(VERTICIES),
-                usage: wgpu::BufferUsages::VERTEX,
-            }
-        );
+            })
+            .await
+            .unwrap();
 
-    let index_buffer = device.create_buffer_init(
-        &wgpu::util::BufferInitDescriptor{
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Vertex Buffer"),
+            contents: bytemuck::cast_slice(VERTICIES),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Index Buffer"),
             contents: bytemuck::cast_slice(INDICIES),
             usage: wgpu::BufferUsages::INDEX,
-        }
-    );
+        });
 
-    let num_indicies = INDICIES.len() as u32;
+        let num_indicies = INDICIES.len() as u32;
 
-    let surface_caps = surface.get_capabilities(&adapter);
-    
-    let surface_format = surface_caps
-    .formats
-    .iter()
-    .find(|f| f.is_srgb())
-    .copied()
-    .unwrap_or(surface_caps.formats[0]);
+        let surface_caps = surface.get_capabilities(&adapter);
 
-let config = wgpu::SurfaceConfiguration {
+        let surface_format = surface_caps
+            .formats
+            .iter()
+            .find(|f| f.is_srgb())
+            .copied()
+            .unwrap_or(surface_caps.formats[0]);
+
+        let diffuse_bytes = include_bytes!("AngryDog.png"); // our texture
+        let diffuse_texture = texture::Texture::from_bytes(&device, &queue, diffuse_bytes, "AngryDog.png").unwrap();//image::load_from_memory(diffuse_bytes).unwrap();
+        // let diffuse_rgba = diffuse_image.to_rgba8();
+
+        let texture_bind_group_layout = 
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0, 
+                        visibility: wgpu::ShaderStages::FRAGMENT, 
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false, // I'm assuming I can turn this on in bevy
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true},
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1, 
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        // This should match the filterable field of the corresponding Texture entry above. 
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+                label: Some("texture_bind_group_layout"),
+            });
+        
+        // we can hotswap bind groups on the fly so long as they share the same bind layout
+        let diffuse_bind_group = device.create_bind_group(
+            &wgpu::BindGroupDescriptor {
+                layout: &texture_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&diffuse_texture.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1, 
+                        resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler),
+                    }
+                ],
+                label: Some("diffuse_bind_group"),
+            }
+        );
+
+
+        let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
             width: size.width,
@@ -194,21 +264,32 @@ let config = wgpu::SurfaceConfiguration {
 
         // we can grab the errors that are thrown out by the compilation here
         let info = shader.get_compilation_info().await;
-        let errors = info.messages.iter().filter(|message| message.message_type  == wgpu::CompilationMessageType::Error);
+        let errors = info
+            .messages
+            .iter()
+            .filter(|message| message.message_type == wgpu::CompilationMessageType::Error);
         for error in errors {
-            eprintln!("{:?}",error.message);
-        };
+            eprintln!("{:?}", error.message);
+        }
 
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Pipeline Layout"),
-            bind_group_layouts: &[],
-            immediate_size: 0,  
-            // push_constant_ranges: &[],
-        });
+        // let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        //     label: Some("Pipeline Layout"),
+        //     bind_group_layouts: &[],
+        //     immediate_size: 0,
+        //     // push_constant_ranges: &[], // TODO: figure out what this even is and why it was included in the previous tutorial
+        // });
+
+        let render_pipeline_layout = device.create_pipeline_layout(
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some("Render Pipeline Layout"),
+                bind_group_layouts: &[Some(&texture_bind_group_layout)],
+                immediate_size: 0,
+            }
+        );
 
         let render_pipleline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Render Piepline"),
-            layout: Some(&pipeline_layout),
+            label: Some("Render Pipeline"),
+            layout: Some(&render_pipeline_layout),
 
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -253,20 +334,22 @@ let config = wgpu::SurfaceConfiguration {
             cache: None,
         });
         let num_verticies = VERTICIES.len() as u32;
-        
+
         State {
             surface,
             device,
             queue,
             config,
             size,
-            is_surface_configured:false,
+            is_surface_configured: false,
             window,
             render_pipleline,
             vertex_buffer,
             num_verticies,
             index_buffer,
             num_indicies,
+            diffuse_bind_group,
+            diffuse_texture,
         }
     }
 
@@ -285,7 +368,6 @@ let config = wgpu::SurfaceConfiguration {
     }
 
     fn render(&mut self, output: wgpu::SurfaceTexture) {
-
         let view: wgpu::TextureView = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -321,16 +403,16 @@ let config = wgpu::SurfaceConfiguration {
                 // Allows for layered effects using masking
                 multiview_mask: None,
             });
-            
-            
+
             render_pass.set_pipeline(&self.render_pipleline); // The render pipeline must come before the index buffer sine those two are tied together. But the vertex buffer don't care either way.
+            render_pass.set_bind_group(0, &self.diffuse_bind_group,&[]);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..)); // .. sepcifies the entire buffer
-            render_pass.set_index_buffer(self.index_buffer.slice(..),wgpu::IndexFormat::Uint16);
+            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
             render_pass.draw_indexed(0..self.num_indicies, 0, 0..1); //assuming  that the one gets increased when we go into instantiation or however you spell ts.
-            println!("self.num_verticies: {}", self.num_verticies);
+            // println!("self.num_verticies: {}", self.num_verticies);
             render_pass.draw(0..self.num_verticies, 0..1); // this used to be 3 that's why it was only drawing the 3 triangles despite me sending more type shi!!!!
         }
-
+        
         self.queue.submit(std::iter::once(encoder.finish())); // submit takes an iterator because you typically find several command buffer commands in the encoder finish
         self.queue.present(output); // puts the frame on screen, a SurfaceTexture dropped without this gets thrown away
     }
