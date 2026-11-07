@@ -317,23 +317,27 @@ struct State {
 
     num_indicies: u32,
 
-    diffuse_bind_group: wgpu::BindGroup,
+    // diffuse_bind_group: wgpu::BindGroup,
 
     diffuse_texture: texture::Texture,
 
     camera: Camera,
-
+    
     camera_uniform: CameraUniform,
-
+    
     camera_buffer: wgpu::Buffer,
-
+    
     camera_bind_group: wgpu::BindGroup,
-
+    
     camera_controller: CameraController,
     
     instances: Vec<Instance>,
-
+    
     instance_buffer: wgpu::Buffer,
+    
+    depth_texture: texture::Texture,
+
+    depth_bind_group_plus_diffuse: wgpu::BindGroup,
 }
 
 impl State {
@@ -422,8 +426,22 @@ impl State {
             .copied()
             .unwrap_or(surface_caps.formats[0]);
 
+
+         let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: surface_format,
+            width: size.width,
+            height: size.height,
+            present_mode: wgpu::PresentMode::Fifo, //Caps the frames to be at the refresh rate of the monitor, it's the one mode that guarenteed to exist everywhere.
+            alpha_mode: surface_caps.alpha_modes[0],
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2, // how many frames the gpu may work on before it has to wait for one to be displayed. Defaults to two.
+            color_space: wgpu::SurfaceColorSpace::Auto,
+        };
+        
         let diffuse_bytes = include_bytes!("AngryDog.png"); // our texture
         let diffuse_texture = texture::Texture::from_bytes(&device, &queue, diffuse_bytes, "AngryDog.png").unwrap();//image::load_from_memory(diffuse_bytes).unwrap();
+        let depth_texture = texture::Texture::create_depth_texture(&device, &config, "depth_texture");
         // let diffuse_rgba = diffuse_image.to_rgba8();
 
         let texture_bind_group_layout = 
@@ -446,13 +464,46 @@ impl State {
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false, 
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Depth,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3, 
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                        count: None,
+                    }
                 ],
                 label: Some("texture_bind_group_layout"),
             });
         
         // we can hotswap bind groups on the fly so long as they share the same bind layout
-        let diffuse_bind_group = device.create_bind_group(
-            &wgpu::BindGroupDescriptor {
+        // let diffuse_bind_group = device.create_bind_group(
+        //     &wgpu::BindGroupDescriptor {
+        //         layout: &texture_bind_group_layout,
+        //         entries: &[
+        //             wgpu::BindGroupEntry {
+        //                 binding: 0,
+        //                 resource: wgpu::BindingResource::TextureView(&diffuse_texture.view),
+        //             },
+        //             wgpu::BindGroupEntry {
+        //                 binding: 1, 
+        //                 resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler),
+        //             }
+        //         ],
+        //         label: Some("diffuse_bind_group"),
+        //     }
+        // );
+        
+        let depth_bind_group_plus_diffuse = device.create_bind_group(
+            &wgpu::BindGroupDescriptor{
                 layout: &texture_bind_group_layout,
                 entries: &[
                     wgpu::BindGroupEntry {
@@ -462,23 +513,20 @@ impl State {
                     wgpu::BindGroupEntry {
                         binding: 1, 
                         resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2, 
+                        resource: wgpu::BindingResource::TextureView(&depth_texture.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3, 
+                        resource: wgpu::BindingResource::Sampler(&depth_texture.sampler),
                     }
                 ],
-                label: Some("diffuse_bind_group"),
+                label: Some("depth_bind_group_plus_diffuse"),
             }
         );
-        
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: surface_format,
-            width: size.width,
-            height: size.height,
-            present_mode: wgpu::PresentMode::Fifo, //Caps the frames to be at the refresh rate of the monitor, it's the one mode that guarenteed to exist everywhere.
-            alpha_mode: surface_caps.alpha_modes[0],
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2, // how many frames the gpu may work on before it has to wait for one to be displayed. Defaults to two.
-            color_space: wgpu::SurfaceColorSpace::Auto,
-        };
+       
         
         let camera = Camera {
             // position the camera 1 unit up and 2 units back
@@ -607,7 +655,13 @@ impl State {
                 unclipped_depth: false,
                 conservative: false,
             },
-            depth_stencil: None,
+            depth_stencil: Some(wgpu::DepthStencilState { // This can be None if we don't need a depth buffer.
+                format: texture::Texture::DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less), // Less means that pixels will be drawn from front to back.
+                stencil: wgpu::StencilState::default(), // Common practice dictates that we store the stencil buffer and the depth buffer in the same texture. From what I've gathered stencil buffers and in turn stencil testing is akin to masking. I also saw that it can be used to outline objects as well.  
+                bias: wgpu::DepthBiasState::default(),
+            }),
 
             multisample: wgpu::MultisampleState {
                 count: 1, // means there's not going to be antialiasing happening during rendering.
@@ -633,7 +687,7 @@ impl State {
             num_verticies,
             index_buffer,
             num_indicies,
-            diffuse_bind_group,
+            // diffuse_bind_group,
             diffuse_texture,
             camera,
             camera_uniform,
@@ -642,6 +696,8 @@ impl State {
             camera_controller,
             instances,
             instance_buffer,
+            depth_texture,
+            depth_bind_group_plus_diffuse,
         }
     }
 
@@ -655,6 +711,7 @@ impl State {
             self.size = new_size;
             self.config.width = new_size.width;
             self.config.height = new_size.height;
+            self.depth_texture = texture::Texture::create_depth_texture(&self.device, &self.config, "depth_texture"); // needs to be after the config update otherwise the program will crash as the size of the window is different from the texture size. 
             self.surface.configure(&self.device, &self.config);
         }
     }
@@ -687,17 +744,25 @@ impl State {
                     },
                     depth_slice: None,
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_texture.view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
                 // Couldn't tell you wtf this does
                 timestamp_writes: None,
                 // Not needed yet due since they're for gpu profiling
                 occlusion_query_set: None,
-                // Allows for layered effects using masking
+                // Allows for layered effects using masking <-- I think? It kinda looks like the depth_stencil can do the same thing so idk anymore. 
                 multiview_mask: None,
             });
 
             render_pass.set_pipeline(&self.render_pipleline); // The render pipeline must come before the index buffer sine those two are tied together. But the vertex buffer don't care either way.
-            render_pass.set_bind_group(0, &self.diffuse_bind_group,&[]);
+            // render_pass.set_bind_group(0, &self.diffuse_bind_group,&[]);
+            render_pass.set_bind_group(0, &self.depth_bind_group_plus_diffuse, &[]);
             
             render_pass.set_bind_group(1, &self.camera_bind_group, &[]); // needs to go before the vertex buffer because we're using its values to augment the vertex values.
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..)); // .. sepcifies the entire buffer
