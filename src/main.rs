@@ -14,100 +14,12 @@ use winit::window::{Window, WindowId};
 use cgmath::prelude::*;
 
 mod texture;
+mod model;
+mod resources;
 
-#[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Vertex {
-    pub position: [f32; 3],
-    pub tex_coords: [f32; 2],
-}
-// we put the verticies in counter-clockwise both due to tradition and because we want access to backface culling.
-const VERTICIES: &[Vertex] = &[
-    // Triangle
+use model::Vertex;
 
-    // Vertex { position: [ 0.0,  0.5,  0.0],    color: [1.0,0.0,0.0]},
-    // Vertex { position: [-0.5, -0.5,  0.0],    color: [0.0,1.0,0.0]},
-    // Vertex { position: [ 0.5, -0.5,  0.0],    color: [0.0,0.0,1.0]},
-
-    // rgb_color = ((srgb_color / 255 + 0.055) / 1.055) ^ 2.4 is the forumula to get the proper colors out of sRGB since it chooses to fuck them up due to the way humans percieve colors.
-
-    // Pentagon with upside down textures
-    // Vertex { position: [-0.0868241, 0.49240386, 0.0], tex_coords: [0.4131759, 0.99240386], }, // A
-    // Vertex { position: [-0.49513406, 0.06958647, 0.0], tex_coords: [0.0048659444, 0.56958647], }, // B
-    // Vertex { position: [-0.21918549, -0.44939706, 0.0], tex_coords: [0.28081453, 0.05060294], }, // C
-    // Vertex { position: [0.35966998, -0.3473291, 0.0], tex_coords: [0.85967, 0.1526709], }, // D
-    // Vertex { position: [0.44147372, 0.2347359, 0.0], tex_coords: [0.9414737, 0.7347359], }, // E
-
-    // Pentagon with right-side-up textures
-    // all of them seem to be 1- the previous number give or take. which makes sense
-    Vertex { position: [-0.0868241, 0.49240386, 0.0], tex_coords: [0.4131759, 0.00759614], }, // A 
-    Vertex { position: [-0.49513406, 0.06958647, 0.0], tex_coords: [0.0048659444, 0.43041354], }, // B
-    Vertex { position: [-0.21918549, -0.44939706, 0.0], tex_coords: [0.28081453, 0.949397], }, // C
-    Vertex { position: [0.35966998, -0.3473291, 0.0], tex_coords: [0.85967, 0.84732914], }, // D
-    Vertex { position: [0.44147372, 0.2347359, 0.0], tex_coords: [0.9414737, 0.2652641], }, // E
-
-    //hexagon
-    // Vertex {
-    //     position: [0.0, 0.5, 0.0],
-    //     color: [0.5, 0.0, 0.5],
-    // },
-    // Vertex {
-    //     position: [-0.25, 0.25, 0.0],
-    //     color: [0.5, 0.0, 0.5],
-    // },
-    // Vertex {
-    //     position: [-0.25, -0.25, 0.0],
-    //     color: [0.5, 0.0, 0.5],
-    // },
-    // Vertex {
-    //     position: [0.0, -0.5, 0.0],
-    //     color: [0.5, 0.0, 0.5],
-    // },
-    // Vertex {
-    //     position: [0.25, -0.25, 0.0],
-    //     color: [0.5, 0.0, 0.5],
-    // },
-    // Vertex {
-    //     position: [0.25, 0.25, 0.0],
-    //     color: [0.5, 0.0, 0.5],
-    // },
-];
-
-const INDICIES: &[u16] = &[
-    // pentagon
-    0,1,4,
-    1,2,4,
-    2,3,4,
-
-    // hexagon
-    // 0, 1, 5, 
-    // 1, 2, 5,
-    // 2, 3, 5,
-    // 3, 4, 5,
-
-    //NOTE TO SELF: don't forget to switch the index array because it will NOT throw a goddamn error for some reason and will just used the fucked up indicies. 
-];
-
-impl Vertex {
-    fn desc() -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                wgpu::VertexAttribute {
-                    offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x2, // Changed from Float32x3 since we're no longer using color coordinates directly
-                },
-            ],
-        }
-    }
-}
+use crate::model::DrawModel;
 
 struct Instance {
     position: cgmath::Vector3<f32>,
@@ -164,7 +76,9 @@ impl InstanceRaw {
 }
 
 const NUM_INSTANCES_PER_ROW: u32 = 10;
-const INSTANCE_DISPLACEMENT: cgmath::Vector3<f32> = cgmath::Vector3::new(NUM_INSTANCES_PER_ROW as f32 * 0.5, 0.0, NUM_INSTANCES_PER_ROW as f32 * 0.5);
+const SPACING_OFFSET: f32 = 2.0;
+const INSTANCE_DISPLACEMENT: cgmath::Vector3<f32> = cgmath::Vector3::new(NUM_INSTANCES_PER_ROW as f32 * SPACING_OFFSET, 0.0, NUM_INSTANCES_PER_ROW as f32 * SPACING_OFFSET);
+const SPACE_BETWEEN: f32 = 3.0;
 
 struct Camera {
     eye: cgmath::Point3<f32>,
@@ -309,35 +223,27 @@ struct State {
 
     render_pipleline: wgpu::RenderPipeline,
 
-    vertex_buffer: wgpu::Buffer,
+    obj_model: model::Model,
 
-    num_verticies: u32,
-
-    index_buffer: wgpu::Buffer,
-
-    num_indicies: u32,
-
-    // diffuse_bind_group: wgpu::BindGroup,
+    diffuse_bind_group: wgpu::BindGroup,
 
     diffuse_texture: texture::Texture,
 
     camera: Camera,
-    
+
     camera_uniform: CameraUniform,
-    
+
     camera_buffer: wgpu::Buffer,
-    
+
     camera_bind_group: wgpu::BindGroup,
-    
+
     camera_controller: CameraController,
     
     instances: Vec<Instance>,
-    
-    instance_buffer: wgpu::Buffer,
-    
-    depth_texture: texture::Texture,
 
-    depth_bind_group_plus_diffuse: wgpu::BindGroup,
+    instance_buffer: wgpu::Buffer,
+
+    depth_texture: texture::Texture,
 }
 
 impl State {
@@ -376,23 +282,12 @@ impl State {
             .await
             .unwrap();
 
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(VERTICIES),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Index Buffer"),
-            contents: bytemuck::cast_slice(INDICIES),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-
-        let num_indicies = INDICIES.len() as u32;
-
         let instances = (0..NUM_INSTANCES_PER_ROW).flat_map(|z| {
             (0..NUM_INSTANCES_PER_ROW).map(move |x| { //TODO: figure out what 'move' does because it removed an error 
-                let position = cgmath::Vector3 {x: x as f32, y: 0.0, z: z as f32} - INSTANCE_DISPLACEMENT;
+                let x = SPACE_BETWEEN * (x as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0);
+                let z = SPACE_BETWEEN * (z as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0);
+
+                let position = cgmath::Vector3 {x, y: 0.0, z};
 
                 let rotation = if position.is_zero() {
                     // this is needed so an object at (0,0,0) won't get scaled to zero as quaternions can affect scale if they're not created correctly
@@ -464,46 +359,13 @@ impl State {
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false, 
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Depth,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3, 
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
-                        count: None,
-                    }
                 ],
                 label: Some("texture_bind_group_layout"),
             });
         
         // we can hotswap bind groups on the fly so long as they share the same bind layout
-        // let diffuse_bind_group = device.create_bind_group(
-        //     &wgpu::BindGroupDescriptor {
-        //         layout: &texture_bind_group_layout,
-        //         entries: &[
-        //             wgpu::BindGroupEntry {
-        //                 binding: 0,
-        //                 resource: wgpu::BindingResource::TextureView(&diffuse_texture.view),
-        //             },
-        //             wgpu::BindGroupEntry {
-        //                 binding: 1, 
-        //                 resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler),
-        //             }
-        //         ],
-        //         label: Some("diffuse_bind_group"),
-        //     }
-        // );
-        
-        let depth_bind_group_plus_diffuse = device.create_bind_group(
-            &wgpu::BindGroupDescriptor{
+        let diffuse_bind_group = device.create_bind_group(
+            &wgpu::BindGroupDescriptor {
                 layout: &texture_bind_group_layout,
                 entries: &[
                     wgpu::BindGroupEntry {
@@ -513,19 +375,12 @@ impl State {
                     wgpu::BindGroupEntry {
                         binding: 1, 
                         resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2, 
-                        resource: wgpu::BindingResource::TextureView(&depth_texture.view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3, 
-                        resource: wgpu::BindingResource::Sampler(&depth_texture.sampler),
                     }
                 ],
-                label: Some("depth_bind_group_plus_diffuse"),
+                label: Some("diffuse_bind_group"),
             }
         );
+        
        
         
         let camera = Camera {
@@ -608,6 +463,11 @@ impl State {
         //     // push_constant_ranges: &[], // TODO: figure out what this even is and why it was included in the previous tutorial
         // });
 
+        let obj_model = resources::load_model("cube.obj", &device, &queue, &texture_bind_group_layout)
+            .await
+            .unwrap();
+
+
         let render_pipeline_layout = device.create_pipeline_layout(
             &wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
@@ -627,7 +487,7 @@ impl State {
                 module: &shader,
                 entry_point: Some("vertex"),
                 buffers: &[
-                    Some(Vertex::desc()),
+                    Some(model::ModelVertex::desc()),
                     Some(InstanceRaw::desc()),
                     //None, // also valid: // Some(Instance::desc()) // where you actually create the function desc() for all of them of course
                     // An index buffer is used in junction with a vertex buffer to weed out the duplicate verticies that are within a model.
@@ -672,7 +532,6 @@ impl State {
             multiview_mask: None,
             cache: None,
         });
-        let num_verticies = VERTICIES.len() as u32;
 
         State {
             surface,
@@ -683,11 +542,8 @@ impl State {
             is_surface_configured: false,
             window,
             render_pipleline,
-            vertex_buffer,
-            num_verticies,
-            index_buffer,
-            num_indicies,
-            // diffuse_bind_group,
+            obj_model,
+            diffuse_bind_group,
             diffuse_texture,
             camera,
             camera_uniform,
@@ -697,7 +553,6 @@ impl State {
             instances,
             instance_buffer,
             depth_texture,
-            depth_bind_group_plus_diffuse,
         }
     }
 
@@ -760,16 +615,9 @@ impl State {
                 multiview_mask: None,
             });
 
-            render_pass.set_pipeline(&self.render_pipleline); // The render pipeline must come before the index buffer sine those two are tied together. But the vertex buffer don't care either way.
-            // render_pass.set_bind_group(0, &self.diffuse_bind_group,&[]);
-            render_pass.set_bind_group(0, &self.depth_bind_group_plus_diffuse, &[]);
-            
-            render_pass.set_bind_group(1, &self.camera_bind_group, &[]); // needs to go before the vertex buffer because we're using its values to augment the vertex values.
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..)); // .. sepcifies the entire buffer
             render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..)); //When adding new instances to the Vec, we need to recreate the instance_buffer as well as the camera_bind_group. Otherwise the instances won't show up correctly.
-            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            render_pass.draw_indexed(0..self.num_indicies, 0, 0..self.instances.len() as _); //assuming  that the one gets increased when we go into instantiation or however you spell ts.
-            render_pass.draw(0..self.num_verticies, 0..1); // this used to be 3 that's why it was only drawing the 3 triangles despite me sending more type shi!!!!
+            render_pass.set_pipeline(&self.render_pipleline); // The render pipeline must come before the index buffer sine those two are tied together. But the vertex buffer don't care either way.
+            render_pass.draw_model_instanced(&self.obj_model, 0..self.instances.len() as u32, &self.camera_bind_group);
         }
         
         self.queue.submit(std::iter::once(encoder.finish())); // submit takes an iterator because you typically find several command buffer commands in the encoder finish
@@ -857,187 +705,3 @@ fn main() {
     let event_loop = EventLoop::new().unwrap();
     event_loop.run_app(&mut App::default()).unwrap();
 }
-
-// // use bevy::camera::ScalingMode;
-// // use bevy::prelude::*;
-
-// fn main() {
-//     // wgpus logging has been enabled here
-//     env_logger::init();
-
-//     //Finds the graphics api that's available on this pc
-//     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-//         backends: wgpu::Backends::all(),
-//         ..Default::default()
-//     });
-
-//     let adapter = pollster::block_on(instance.request_adapter(
-//         &wgpu::RequestAdapterOptions{
-//             power_preference: wgpu::PowerPreference::HighPerformance, // this tells our program that we want the adapter with the highest performace, uncaring for battery life and power usage.
-//             compatible_surface: None, // the place where we draw the images to the screen.
-//             force_fallback_adapter: false, // setting this to true would force a software renderer, which isn't required when we have a gpu.
-//         }
-//     )). expect("No suitable GPU found on this machine");
-
-//     println!("Chose:\t\t{}", adapter.get_info().name);   // println!("-- GPUs found on this machine --");
-//     // for adapter in instance.enumerate_adapters(wgpu::Backends::all()) {
-//     //     let info = adapter.get_info();
-
-//     //     println!("Name:\t\t{}", info.name);
-//     //     println!("Backend:\t\t{:?}", info.backend);
-//     //     println!("Type:\t\t{:?}", info.device_type);
-//     //     println!("Driver:\t\t{} {}", info.driver, info.driver_info);
-
-//     //     let limits = adapter.limits();
-//     //     println!("Max texture size:\t\t{}", limits.max_texture_dimension_2d);
-//     //     println!("Max buffer size:\t\t{}", limits.max_buffer_size);
-//     //     // the base amount you're allowed to use across all platforms is 4, anything beyond that and you're going to run into porting issues.
-//     //     println!("Max bind groups:\t\t{}", limits.max_bind_groups);
-//     //     println!("Max vertex attributes:\t\t{}", limits.max_vertex_attributes);
-//     //     // The limit to the amount of threads a compute shader can use at once, pretty much limiting the amount of parallel work a compute shader can do
-//     //     println!("Max compute groups:\t\t{}", limits.max_compute_workgroup_size_x);
-
-//     //     println!();
-//     // }
-//     // App::new()
-//     //     .add_plugins(DefaultPlugins)
-//     //     .add_systems(Startup, setup)
-//     //     // .add_systems(Update, environment_map_load_finish)
-//     //     .run();
-// }
-
-// // set up a simple 3D scene
-// // fn setup(
-// //     mut commands: Commands,
-// //     mut meshes: ResMut<Assets<Mesh>>,
-// //     mut materials: ResMut<Assets<StandardMaterial>>,
-// //     // asset_server: Res<AssetServer>,
-// // ) {
-// //     let sphere_mesh = meshes.add(Sphere::new(0.45));
-// //     // add entities to the world
-// //     for y in -2..=2 {
-// //         for x in -5..=5 {
-// //             let x01 = (x + 5) as f32 / 10.0;
-// //             let y01 = (y + 2) as f32 / 4.0;
-// //             // sphere
-// //             commands.spawn((
-// //                 Mesh3d(sphere_mesh.clone()),
-// //                 MeshMaterial3d(materials.add(StandardMaterial {
-// //                     base_color: Srgba::hex("#ffd891").unwrap().into(),
-// //                     // vary key PBR parameters on a grid of spheres to show the effect
-// //                     metallic: y01,
-// //                     perceptual_roughness: x01,
-// //                     ..default()
-// //                 })),
-// //                 Transform::from_xyz(x as f32, y as f32 + 0.5, 0.0),
-// //             ));
-// //         }
-// //     }
-// //     // unlit sphere
-// //     commands.spawn((
-// //         Mesh3d(sphere_mesh),
-// //         MeshMaterial3d(materials.add(StandardMaterial {
-// //             base_color: Srgba::hex("#ffd891").unwrap().into(),
-// //             // vary key PBR parameters on a grid of spheres to show the effect
-// //             unlit: true,
-// //             ..default()
-// //         })),
-// //         Transform::from_xyz(-5.0, -2.5, 0.0),
-// //     ));
-
-// //     commands.spawn((
-// //         DirectionalLight {
-// //             illuminance: 1_500.,
-// //             ..default()
-// //         },
-// //         Transform::from_xyz(50.0, 50.0, 50.0).looking_at(Vec3::ZERO, Vec3::Y),
-// //     ));
-
-// //     // labels
-// //     commands.spawn((
-// //         Text::new("Perceptual Roughness"),
-// //         TextFont {
-// //             font_size: FontSize::Px(30.0),
-// //             ..default()
-// //         },
-// //         Node {
-// //             position_type: PositionType::Absolute,
-// //             top: px(20),
-// //             left: px(100),
-// //             ..default()
-// //         },
-// //     ));
-
-// //     commands.spawn((
-// //         Text::new("Metallic"),
-// //         TextFont {
-// //             font_size: FontSize::Px(30.0),
-// //             ..default()
-// //         },
-// //         Node {
-// //             position_type: PositionType::Absolute,
-// //             top: px(130),
-// //             right: Val::ZERO,
-// //             ..default()
-// //         },
-// //         UiTransform {
-// //             rotation: Rot2::degrees(90.),
-// //             ..default()
-// //         },
-// //     ));
-
-// //     // commands.spawn((
-// //     //     Text::new("Loading Environment Map..."),
-// //     //     TextFont {
-// //     //         font_size: FontSize::Px(30.0),
-// //     //         ..default()
-// //     //     },
-// //     //     Node {
-// //     //         position_type: PositionType::Absolute,
-// //     //         bottom: px(20),
-// //     //         right: px(20),
-// //     //         ..default()
-// //     //     },
-// //     //     EnvironmentMapLabel,
-// //     // ));
-
-// //     // camera
-// //     commands.spawn((
-// //         Camera3d::default(),
-// //         Transform::from_xyz(0.0, 0.0, 8.0).looking_at(Vec3::default(), Vec3::Y),
-// //         Projection::from(OrthographicProjection {
-// //             scale: 0.01,
-// //             scaling_mode: ScalingMode::WindowSize,
-// //             ..OrthographicProjection::default_3d()
-// //         }),
-// //         // EnvironmentMapLight {
-// //         //     diffuse_map: asset_server.load("environment_maps/pisa_diffuse_rgb9e5_zstd.ktx2"),
-// //         //     specular_map: asset_server.load("environment_maps/pisa_specular_rgb9e5_zstd.ktx2"),
-// //         //     intensity: 900.0,
-// //         //     ..default()
-// //         // },
-// //     ));
-// // }
-
-// // fn environment_map_load_finish(
-// //     mut commands: Commands,
-// //     asset_server: Res<AssetServer>,
-// //     environment_map: Single<&EnvironmentMapLight>,
-// //     label_entity: Option<Single<Entity, With<EnvironmentMapLabel>>>,
-// // ) {
-// //     if asset_server
-// //         .load_state(&environment_map.diffuse_map)
-// //         .is_loaded()
-// //         && asset_server
-// //             .load_state(&environment_map.specular_map)
-// //             .is_loaded()
-// //     {
-// //         // Do not attempt to remove `label_entity` if it has already been removed.
-// //         if let Some(label_entity) = label_entity {
-// //             commands.entity(*label_entity).despawn();
-// //         }
-// //     }
-// // }
-
-// // #[derive(Component)]
-// // struct EnvironmentMapLabel;

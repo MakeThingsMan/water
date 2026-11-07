@@ -68,17 +68,11 @@ fn vertex (
 var t_diffuse: texture_2d<f32>;
 @group(0) @binding(1) //binding describes where its slotted into in the sampler in this instance.
 var s_diffuse: sampler;
-@group(0) @binding(2)
-var t_depth: texture_depth_2d;
-@group(0) @binding(3)
-var s_depth: sampler_comparison;
+
 
 @fragment
 //fn fragment(@location(0) color: vec3f) -> @location(0) vec4f {
 fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
-  // return textureSample(t_diffuse, s_diffuse, in.tex_coords); // diffuse render
-  let brightness = textureSampleCompare(t_depth,s_depth,in.tex_coords,0.20);
-
-  return vec4f(brightness,brightness,brightness,1.0);
+  return textureSample(t_diffuse, s_diffuse, in.tex_coords);
   //  return vec4f(color,1.0); 
 }
