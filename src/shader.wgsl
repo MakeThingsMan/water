@@ -1,3 +1,17 @@
+struct CameraUniform {
+  view_proj: mat4x4<f32>,
+};
+
+@group(1) @binding(0)
+var<uniform> camera: CameraUniform;
+
+struct InstanceInput {
+  @location(5) model_matrix_0: vec4<f32>,
+  @location(6) model_matrix_1: vec4<f32>,
+  @location(7) model_matrix_2: vec4<f32>,
+  @location(8) model_matrix_3: vec4<f32>,
+};
+
 struct VertexInput {
   @location(0) position: vec3<f32>,
   @location(1) tex_coords: vec2<f32>,
@@ -10,7 +24,10 @@ struct VertexOut {
 };
 
 @vertex
-fn vertex (model: VertexInput,) -> VertexOut{//(@builtin(vertex_index) vertexIndex: u32) -> VertexOut {
+fn vertex (
+  model: VertexInput,
+  instance: InstanceInput,
+) -> VertexOut{//(@builtin(vertex_index) vertexIndex: u32) -> VertexOut {
   // var positions = array<vec2f, 6>(
   //   vec2f(-0.5,  0.5),
   //   vec2f(-0.5, -0.5),
@@ -34,9 +51,16 @@ fn vertex (model: VertexInput,) -> VertexOut{//(@builtin(vertex_index) vertexInd
   // out.color = colors[vertexIndex];
   // return out;
 
+  let model_matrix = mat4x4<f32>( // we set this before the camera matrix changes everything because these are in world space coordinates and the camera matrix transposes everything into camera space. 
+    instance.model_matrix_0,
+    instance.model_matrix_1,
+    instance.model_matrix_2,
+    instance.model_matrix_3,
+  );
+
   var out: VertexOut;
   out.tex_coords = model.tex_coords;
-  out.clip_position = vec4<f32>(model.position,1.0);
+  out.clip_position = camera.view_proj * model_matrix * vec4<f32>(model.position,1.0);
   return out;
 }
 
