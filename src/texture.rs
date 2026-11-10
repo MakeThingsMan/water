@@ -14,17 +14,19 @@ impl Texture {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         bytes: &[u8], 
-        label: &str
+        label: &str,
+        is_normal_map: bool
     ) -> Result<Self> {
         let img = image::load_from_memory(bytes)?;
-        Self::from_image(device, queue, &img, Some(label))
+        Self::from_image(device, queue, &img, Some(label), is_normal_map)
     }
 
     pub fn from_image(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         img: &image::DynamicImage,
-        label: Option<&str>
+        label: Option<&str>,
+        is_normal_map: bool,
     ) -> Result<Self> {
         let rgba = img.to_rgba8();
         let dimensions = img.dimensions();
@@ -34,6 +36,13 @@ impl Texture {
             height: dimensions.1,
             depth_or_array_layers: 1,
         };
+
+        let format = if is_normal_map {
+            wgpu::TextureFormat::Rgba8Unorm
+        } else {
+            wgpu::TextureFormat::Rgba8UnormSrgb
+        };
+
         let texture = device.create_texture(
             &wgpu::TextureDescriptor {
                 label,
@@ -41,7 +50,7 @@ impl Texture {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                format,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             }
@@ -107,6 +116,42 @@ impl Texture {
                 min_filter: wgpu::FilterMode::Linear,
                 mipmap_filter: wgpu::MipmapFilterMode::Nearest,
                 compare: Some(wgpu::CompareFunction::LessEqual), // If we do want to render our depth texture ever, we need this to be LessEqual because of the way sampler_comparison and textureSampleCompare() interact with the texture() function in GLSL. Whatever the hell that means. 
+                lod_min_clamp: 0.0,
+                lod_max_clamp: 100.0,
+                ..Default::default()
+            }
+        );
+
+        Self { texture, view, sampler }
+    }
+
+    pub fn create_screen_texture(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration, label: &str) -> Self {
+        let size = wgpu::Extent3d { // Needs to be the same size as our screen in order for things to render correctly. Using config ensures the two are the same. 
+            width: config.width.max(1),
+            height: config.height.max(1),
+            depth_or_array_layers: 1,
+        };
+        let desc = wgpu::TextureDescriptor {
+            label: Some(label),
+            size,
+            mip_level_count: 1, //the mip level should be as low as possible i'm pretty sure cause this is just going to be a flat screenshot of what the screen is, no need for mips.
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2, 
+            format: config.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT| wgpu::TextureUsages::TEXTURE_BINDING, // Don't think we need TEXTURE_BINDING for this one since it's going to be the whole screen anyways.
+            view_formats: &[],
+        };
+        let texture = device.create_texture(&desc);
+
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = device.create_sampler( // We technically don't need a sampler for a depth texture but because our texture struct requires it we need this segment
+            &wgpu::SamplerDescriptor {
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::MipmapFilterMode::Nearest,
                 lod_min_clamp: 0.0,
                 lod_max_clamp: 100.0,
                 ..Default::default()
