@@ -1,20 +1,19 @@
 
 use std::sync::Arc;
-use web_sys::js_sys::Intl::SegmenterGranularity::Sentence;
+use std::time::Duration;
 use winit::event_loop::{ActiveEventLoop,};
 use winit::keyboard::{KeyCode,};
 use winit::window::{Window};
 use wgpu::{MemoryBudgetThresholds};
-// use wgpu_core::error;
 use wgpu::util::DeviceExt;
 use cgmath::prelude::*;
 
-use crate::helpers::{create_render_pipeline};
+use crate::helpers::{create_filter_bind_group, create_render_pipeline};
 
 use crate::resources as resources;
 use crate::texture as texture;
 use crate::model as model;
-use crate::model::{DrawModel,Vertex, Model};
+use crate::model::{DrawModel,Vertex};
 
 #[rustfmt::skip]
 pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::from_cols(
@@ -23,6 +22,19 @@ pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::from_co
     cgmath::Vector4::new(0.0,0.0,0.5,0.0),
     cgmath::Vector4::new(0.0,0.0,0.5,1.0), //interesting...
 );
+
+#[repr(C)]
+#[derive(Debug,Copy,Clone,bytemuck::Pod,bytemuck::Zeroable)]
+#[allow(dead_code)]
+struct KuwaharaTunables {
+    alpha: f32,
+    kernel_radius: u32,
+    zeta: f32,
+    zerocross: f32,
+    sectors:u32,
+    hardness: f32,
+    q: f32,
+}
 
 struct Instance {
     position: cgmath::Vector3<f32>,
@@ -286,12 +298,29 @@ pub struct State {
     filter_bind_group_layout: wgpu::BindGroupLayout,
 
     filter_render_pipeline: wgpu::RenderPipeline,
+
+    frame_counter: u32,
+
+    time: std::time::Instant,
+
+    // egui: the UI itself, its winit input handling, and its wgpu renderer
+    egui_ctx: egui::Context,
+
+    egui_state: egui_winit::State,
+
+    egui_renderer: egui_wgpu::Renderer,
+
+    kuwahara_tunables: KuwaharaTunables,
+
+    kuwahara_tunables_buffer: wgpu::Buffer,
 }
 
 impl State {
     pub async fn new(window: Arc<Window>) -> State {
         let size = window.inner_size();
-
+        let time = std::time::Instant::now();
+        let frame_counter: u32 = 0;
+        
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             flags: wgpu::InstanceFlags::default(),
@@ -368,7 +397,7 @@ impl State {
             format: surface_format,
             width: size.width,
             height: size.height,
-            present_mode: wgpu::PresentMode::Fifo, //Caps the frames to be at the refresh rate of the monitor, it's the one mode that guarenteed to exist everywhere.
+            present_mode: wgpu::PresentMode::AutoNoVsync, //Fifo caps the frames to be at the refresh rate of the monitor, it's the one mode that guarenteed to exist everywhere.
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2, // how many frames the gpu may work on before it has to wait for one to be displayed. Defaults to two.
@@ -478,25 +507,45 @@ impl State {
                             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                             count: None,
                         },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 2, 
+                            visibility: wgpu::ShaderStages::FRAGMENT, 
+                            ty: wgpu::BindingType::Buffer { 
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false, 
+                                min_binding_size: None, 
+                            },
+                            count: None,
+                        },
                     ],
                     label: Some("filter_bind_group_layout"),
                 }
             );
+            
+            let kuwahara_tunables = KuwaharaTunables {
+                alpha: 0.9,
+                kernel_radius: 5,
+                zeta: 2.0 / 5.0,
+                zerocross: 1.0,
+                sectors: 8,
+                hardness: 10.0,
+                q: 6.0,
+            };
+            
+            let kuwahara_tunables_buffer = device.create_buffer_init(
+                &wgpu::util::BufferInitDescriptor{
+                    label: Some("Kuwahara Tunables Buffer"),
+                    contents: bytemuck::cast_slice(&[kuwahara_tunables]),
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                }
+            );
 
-        let filter_bind_group = device.create_bind_group( &wgpu::BindGroupDescriptor {
-            layout:  &filter_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&screen_texture.view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::Sampler(&screen_texture.sampler),
-            },
-            ],
-            label: Some("filter_bind_group"),
-        });
+        let filter_bind_group = create_filter_bind_group(
+            &device,
+            &filter_bind_group_layout,
+            &screen_texture.view, 
+            &screen_texture.sampler, 
+            &kuwahara_tunables_buffer);
 
         let camera = Camera {
             // position the camera 1 unit up and 2 units back
@@ -553,6 +602,8 @@ impl State {
             ],
             label: Some("camera_bind_group"),
         });
+
+       
 
         surface.configure(&device, &config);
 
@@ -635,7 +686,7 @@ impl State {
 
             let filter_shader = wgpu::ShaderModuleDescriptor{
                 label: Some("Filter Shader"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("Kuwahara.wgsl").into()),
+                source: wgpu::ShaderSource::Wgsl(include_str!("Generalized_Kuwahara.wgsl").into()),
             };
 
             create_render_pipeline(
@@ -646,6 +697,17 @@ impl State {
                 &[], 
                 filter_shader)
         };
+
+        let egui_ctx = egui::Context::default();
+        let egui_state = egui_winit::State::new(
+            egui_ctx.clone(), // cheap, a Context is an Arc inside
+            egui::ViewportId::ROOT,
+            &*window,
+            Some(window.scale_factor() as f32),
+            None,
+            Some(device.limits().max_texture_dimension_2d as usize),
+        );
+        let egui_renderer = egui_wgpu::Renderer::new(&device, config.format, egui_wgpu::RendererOptions::default());
 
         State {
             surface,
@@ -673,11 +735,60 @@ impl State {
             filter_bind_group,
             filter_bind_group_layout,
             filter_render_pipeline,
+            frame_counter,
+            time,
+            egui_ctx,
+            egui_state,
+            egui_renderer,
+            kuwahara_tunables,
+            kuwahara_tunables_buffer,
         }
     }
 
     pub fn window(&self) -> &Window {
         &self.window
+    }
+
+    /// Gives a window event to egui first. Returns true when egui used it (e.g. typing in a
+    /// text field), so main.rs can skip handing it to the camera as well.
+    pub fn egui_event(&mut self, event: &winit::event::WindowEvent) -> bool {
+        self.egui_state.on_window_event(&self.window, event).consumed
+    }
+
+    /// The egui panel. Once the filter settings live in a uniform buffer, add one slider per value, e.g.
+    /// ui.add(egui::Slider::new(&mut self.your_params.zeta, 0.0..=2.0).text("zeta"));
+    fn ui(&mut self, ctx: &egui::Context) {
+        egui::Window::new("Kuwahara").show(ctx, |ui| {
+            ui.label("Generalized Kuwahara Sliders");
+            ui.label("Alpha");
+            ui.add(egui::DragValue::new(&mut self.kuwahara_tunables.alpha)
+                .speed(0.05)
+                .range(0.0..=1.0));
+            ui.label("Kernel Radius");
+            ui.add(egui::DragValue::new(&mut self.kuwahara_tunables.kernel_radius)
+                .speed(1)
+                .range(0.0..=12.0));
+            ui.label("Zeta");
+            ui.add(egui::DragValue::new(&mut self.kuwahara_tunables.zeta)
+                .speed(0.25)
+                .range(0.0..=100.0));
+            ui.label("Zerocross");
+            ui.add(egui::DragValue::new(&mut self.kuwahara_tunables.zerocross)
+                .speed(0.25)
+                .range(0.0..=10.0));
+            ui.label("Sectors");
+            ui.add(egui::DragValue::new(&mut self.kuwahara_tunables.sectors)
+                .speed(1)
+                .range(0.0..=8.0));
+            ui.label("hardness");
+            ui.add(egui::DragValue::new(&mut self.kuwahara_tunables.hardness)
+                .speed(0.25)
+                .range(0.0..=100.0));
+            ui.label("Q");
+            ui.add(egui::DragValue::new(&mut self.kuwahara_tunables.q)
+                .speed(0.25)
+                .range(0.0..=100.0));
+        });
     }
     // we must ensure that we recheck the size of the window when we change the size or minimize, keeping in mind that values at or below 0 are invalid and will immediately crash the system.
     // We need to make sure to come back to this function whenever something that's permanently used is created. 
@@ -690,26 +801,49 @@ impl State {
             self.depth_texture = texture::Texture::create_depth_texture(&self.device, &self.config, "depth_texture"); // needs to be after the config update otherwise the program will crash as the size of the window is different from the texture size. 
             self.screen_texture = texture::Texture::create_screen_texture(&self.device, &self.config, "screen_texture");
 
-            self.filter_bind_group = self.device.create_bind_group( &wgpu::BindGroupDescriptor { // TODO: Potentially swap this out so the code is more readable. Also I hate redundant code!!!
-                layout:  &self.filter_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&self.screen_texture.view), // Technologia!
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.screen_texture.sampler), // BINDING THE NEW RESOURCE! OHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH!
-                },
-                ],
-                label: Some("filter_bind_group"),
-            });
+            self.filter_bind_group = create_filter_bind_group(
+                &self.device, 
+                &self.filter_bind_group_layout, 
+                &self.screen_texture.view, 
+                &self.screen_texture.sampler, 
+                &self.kuwahara_tunables_buffer);
 
             self.surface.configure(&self.device, &self.config);
         }
     }
 
     pub fn render(&mut self, output: wgpu::SurfaceTexture) {
+        
+        if self.time.elapsed() >= Duration::from_secs(1) {
+            let fps = self.frame_counter as f32 / self.time.elapsed().as_secs_f32();
+            self.window.set_title(&format!("fps: {}",fps));
+            self.time = std::time::Instant::now();
+            self.frame_counter = 0;
+        }
+
+        self.frame_counter += 1;
+
+        // egui: read this frame's input, run the UI, and turn it into triangles
+        let raw_input = self.egui_state.take_egui_input(&self.window);
+        let egui_ctx = self.egui_ctx.clone(); // a local copy so the UI closure can borrow all of self
+        let mut egui_output = egui_ctx.run_pass(raw_input, |ctx| self.ui(ctx));
+
+        self.queue.write_buffer(&self.kuwahara_tunables_buffer, 0, bytemuck::cast_slice(&[self.kuwahara_tunables]));
+        self.egui_state.handle_platform_output(&self.window, egui_output.platform_output);
+        let paint_jobs = egui_ctx.tessellate(egui_output.shapes, egui_output.pixels_per_point);
+        let screen_descriptor = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [self.config.width, self.config.height],
+            pixels_per_point: egui_output.pixels_per_point,
+        };
+
+        // new/changed egui textures (mostly the font atlas). drain() empties the list as it goes,
+        // which matters: egui panics in debug builds if these get dropped unused.
+        for (id, image_deltas) in egui_output.textures_delta.set.drain() {
+            for image_delta in image_deltas {
+                self.egui_renderer.update_texture(&self.device, &self.queue, id, &image_delta);
+            }
+        }
+
         let view: wgpu::TextureView = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -719,6 +853,8 @@ impl State {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Render"),
             });
+
+        let egui_cmd_bufs = self.egui_renderer.update_buffers(&self.device, &self.queue, &mut encoder, &paint_jobs, &screen_descriptor);
 
         {
             // The braces are here to make sure the first render_pass gets thrown out so the borrow checker doesn't throw a fit.
@@ -801,9 +937,36 @@ impl State {
             second_pass.draw(0..3, 0..1);
 
         }
-        
-        self.queue.submit(std::iter::once(encoder.finish())); // submit takes an iterator because you typically find several command buffer commands in the encoder finish
+
+        // egui goes last, straight onto the window, so the filter never touches the UI
+        {
+            let mut egui_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("egui Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load, // keep the filtered image and draw on top of it
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            }).forget_lifetime(); // egui-wgpu wants a RenderPass<'static>. The pass still has to end (these braces) before encoder.finish()
+            self.egui_renderer.render(&mut egui_pass, &paint_jobs, &screen_descriptor);
+        }
+
+        // submit takes an iterator because you typically find several command buffer commands in the encoder finish egui's extra command buffers go in first
+        self.queue.submit(egui_cmd_bufs.into_iter().chain(std::iter::once(encoder.finish())));
         self.queue.present(output); // puts the frame on screen, a SurfaceTexture dropped without this gets thrown away
+
+        // egui textures it no longer needs, freed only after the frame that used them is submitted
+        for id in egui_output.textures_delta.free.drain() {
+            self.egui_renderer.free_texture(&id);
+        }
     }
 
     pub fn handle_key(&mut self, event_loop: &ActiveEventLoop, code: KeyCode, is_pressed: bool) {

@@ -8,7 +8,9 @@ edition = "2024"
 wgpu = "30.0.1"
 pollster = "1.0.1"
 env_logger = "0.11"
-egui = "0.37.0"
+egui = { version = "0.37.0", features = ["default_fonts"] } # 0.37 bundles no fonts by default, without this all text is boxes
+egui-wgpu = "0.37.0" # draws egui with wgpu (needs wgpu 30, same as ours)
+egui-winit = "0.37.0" # feeds winit's mouse/keyboard events into egui
 winit = "0.30.13"
 wgpu-core = "30.0.1"
 bytemuck = {version = "1.25.2", features= ["derive"]}

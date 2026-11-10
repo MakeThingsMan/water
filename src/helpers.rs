@@ -1,3 +1,5 @@
+use wgpu::{BindGroup, Device};
+
 pub fn create_render_pipeline(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
@@ -6,8 +8,7 @@ pub fn create_render_pipeline(
     vertex_layouts: &[Option<wgpu::VertexBufferLayout>],
     shader: wgpu::ShaderModuleDescriptor,
 ) -> wgpu::RenderPipeline {
-    
-  let shader = device.create_shader_module(shader);
+    let shader = device.create_shader_module(shader);
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Render Pipeline"),
@@ -56,6 +57,36 @@ pub fn create_render_pipeline(
             alpha_to_coverage_enabled: false,
         },
         multiview_mask: None,
-        cache: None, // TODO: Figure out why the tutorial didn't have this and what it does. I'm assuming it caches something obviously, but what it's caching is beyond me. Things that don't change between frames perhaps? 
+        cache: None, // TODO: Figure out why the tutorial didn't have this and what it does. I'm assuming it caches something obviously, but what it's caching is beyond me. Things that don't change between frames perhaps?
     })
+}
+
+pub fn create_filter_bind_group(
+    device: &Device,
+    filter_bind_group_layout: &wgpu::BindGroupLayout,
+    screen_texture_view: &wgpu::TextureView,
+    screen_texture_sampler: &wgpu::Sampler,
+    kuwahara_tunables_buffer: &wgpu::Buffer,
+) -> BindGroup{
+    let filter_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        // TODO: Potentially swap this out so the code is more readable. Also I hate redundant code!!!
+        layout: filter_bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(screen_texture_view), // Technologia!
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(screen_texture_sampler), // BINDING THE NEW RESOURCE! OHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH!
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: kuwahara_tunables_buffer.as_entire_binding(),
+            },
+        ],
+        label: Some("filter_bind_group"),
+    });
+
+    filter_bind_group
 }

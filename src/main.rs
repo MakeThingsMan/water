@@ -43,6 +43,9 @@ impl ApplicationHandler for App {
         };
 
         if window_id == state.window.id() {
+            // egui sees every event first (it needs the mouse ones that fall into `_ => {}` below).
+            // `true` means egui used it, like typing in a text field, so the camera shouldn't also get it.
+            let egui_consumed = state.egui_event(&event);
             match event {
                 WindowEvent::CloseRequested => event_loop.exit(),
                 WindowEvent::Resized(phsyical_size) => state.resize(phsyical_size),
@@ -66,7 +69,7 @@ impl ApplicationHandler for App {
                         state:key_state,
                         ..
                      }, 
-                     ..} => state.handle_key(event_loop, code, key_state.is_pressed()),
+                     ..} if !egui_consumed => state.handle_key(event_loop, code, key_state.is_pressed()),
                 _ => {}
             }
         }

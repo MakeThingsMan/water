@@ -24,7 +24,7 @@ Shader "Hidden/AnisotropicKuwahara" {
             o.vertex = UnityObjectToClipPos(v.vertex);
             o.uv = v.uv;
             return o;
-        } // this is the vertex shader entry point i'm assuming?
+        }
 
         #define PI 3.14159265358979323846f
         
@@ -188,7 +188,7 @@ Shader "Hidden/AnisotropicKuwahara" {
                             float w[8];
                             float z, vxx, vyy;
                             
-                            /* Calculate Polynomial Weights */ //... wtf is this bruh
+                            /* Calculate Polynomial Weights */
                             vxx = zeta - eta * v.x * v.x;
                             vyy = zeta - eta * v.y * v.y;
                             z = max(0, v.y + vxx); 
